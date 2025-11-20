@@ -53,7 +53,23 @@ class BookingService {
 
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = response.data;
-        return data;
+        if (data['success'] == true && data['data'] is Map<String, dynamic>) {
+          try {
+            final bookingJson = data['data'] as Map<String, dynamic>;
+            final booking = Booking.fromJson(bookingJson);
+            return {
+              'success': true,
+              'booking': booking,
+              'message': data['message'] ?? 'Lấy chi tiết thành công',
+            };
+          } catch (_) {
+            return {'success': false, 'message': 'Lỗi parse booking'};
+          }
+        }
+        return {
+          'success': false,
+          'message': data['message'] ?? 'Không tìm thấy thông tin',
+        };
       } else {
         throw Exception(
           'Failed to load booking detail: ${response.statusCode}',
@@ -227,8 +243,8 @@ class BookingService {
   }
 
   Future<Map<String, dynamic>> getQRCode(int bookingId) async {
+    final dio = getHttpClient();
     try {
-      final dio = getHttpClient();
       final response = await dio.get(
         '${ApiConstants.qrCode}/$bookingId/qr-code',
         options: Options(headers: jsonHeaders()),
@@ -245,10 +261,23 @@ class BookingService {
             'message': data['message'] ?? 'Lấy mã QR thành công',
           };
         }
+        return {
+          'success': false,
+          'message': data['message'] ?? 'Không tìm thấy dữ liệu',
+        };
       }
       return {
         'success': false,
         'message': 'Lỗi lấy mã QR: ${response.statusCode}',
+      };
+    } on DioException catch (dioErr) {
+      final status = dioErr.response?.statusCode;
+      final serverData = dioErr.response?.data;
+      print('⛔ getQRCode DioException: status=$status, data=$serverData');
+      return {
+        'success': false,
+        'message': 'HTTP ${status ?? 'error'}',
+        'server': serverData,
       };
     } catch (e) {
       return {'success': false, 'message': 'Lỗi: ${e.toString()}'};

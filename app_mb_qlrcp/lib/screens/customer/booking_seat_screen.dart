@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
 import '../../models/movie.dart';
 import '../../models/showtime.dart';
 import '../../models/seat.dart';
@@ -45,13 +46,50 @@ class _BookingSeatScreenState extends State<BookingSeatScreen> {
   Future<void> _loadSeats() async {
     setState(() => _isLoading = true);
     try {
-      final data = await _movieService.getSeats(widget.showtime.showtimeId);
+      // Request flat layout so client can choose a responsive display
+      final data = await _movieService.getSeats(
+        widget.showtime.showtimeId,
+        flat: true,
+      );
       setState(() {
         final rawSeats = (data['seats'] as List?) ?? [];
         if (rawSeats.isNotEmpty && rawSeats.first is Seat) {
           _seats = List<Seat>.from(rawSeats);
         } else {
           _seats = rawSeats.map((s) => Seat.fromJson(s)).toList();
+        }
+
+        // Normalize columns if backend uses 0-based column indices (e.g., 0..9)
+        final colsList = _seats.map((s) => s.column).toList();
+        if (colsList.isNotEmpty) {
+          final minCol = colsList.reduce((a, b) => a < b ? a : b);
+          if (minCol == 0) {
+            _seats = _seats.map((s) {
+              final oldCol = s.column;
+              final newCol = oldCol + 1;
+              String newSeatNumber = s.seatNumber;
+              // If seatNumber was generated as row+oldCol (e.g., A0), update it
+              final rowPrefix = s.row;
+              if (rowPrefix.isNotEmpty) {
+                final regex = RegExp('^' + RegExp.escape(rowPrefix) + r'\d+$');
+                // If seatNumber empty or matches pattern like A0, A1, update to new column
+                if (newSeatNumber.isEmpty || regex.hasMatch(newSeatNumber)) {
+                  newSeatNumber = '$rowPrefix$newCol';
+                }
+              }
+              return Seat(
+                seatId: s.seatId,
+                seatNumber: newSeatNumber,
+                row: s.row,
+                column: newCol,
+                status: s.status,
+                price: s.price,
+                seatTypeId: s.seatTypeId,
+                seatTypeName: s.seatTypeName,
+                surcharge: s.surcharge,
+              );
+            }).toList();
+          }
         }
 
         _totalRows = (data['rows'] is int && (data['rows'] as int) > 0)
@@ -85,7 +123,10 @@ class _BookingSeatScreenState extends State<BookingSeatScreen> {
 
   int _inferColumnsFromSeats() {
     final cols = _seats.map((s) => s.column).toSet().toList()..sort();
-    return cols.isEmpty ? 0 : cols.reduce((a, b) => a > b ? a : b);
+    if (cols.isEmpty) return 0;
+    final minCol = cols.first;
+    final maxCol = cols.last;
+    return (maxCol - minCol + 1);
   }
 
   void _toggleSeat(int seatId) {
@@ -159,6 +200,8 @@ class _BookingSeatScreenState extends State<BookingSeatScreen> {
               selectedSeatIds: _selectedSeatIds.toList(),
               foodItems: foodItems,
               totalAmount: totalAmount,
+              ticketTotal: ticketTotal.toDouble(),
+              foodTotal: foodTotal.toDouble(),
             ),
           ),
         );
@@ -176,6 +219,41 @@ class _BookingSeatScreenState extends State<BookingSeatScreen> {
   Widget _buildSeatsGrid() {
     if (_seats.isEmpty)
       return const Center(child: Text('Không có dữ liệu ghế'));
+    // If backend returned rows==0 (flat layout), render a responsive grid that fits screen
+    if (_totalRows == 0) {
+      final int n = _seats.length;
+      final screenWidth = MediaQuery.of(context).size.width - 32; // padding
+      // Choose roughly square layout: columns ~= sqrt(n)
+      int columns = (n > 0) ? math.sqrt(n).ceil() : 1;
+      // ensure at least 1 and at most n columns
+      columns = columns.clamp(1, n);
+
+      // compute seat size to fit in available width
+      final double spacing = 8.0; // margin between seats
+      final double seatSize = (screenWidth - (columns - 1) * spacing) / columns;
+
+      return Center(
+        child: Wrap(
+          spacing: spacing,
+          runSpacing: spacing,
+          alignment: WrapAlignment.center,
+          children: _seats.map((seat) {
+            final isSelected = _selectedSeatIds.contains(seat.seatId);
+            return SizedBox(
+              width: seatSize,
+              height: seatSize,
+              child: _SeatWidget(
+                seat: seat,
+                isSelected: isSelected,
+                size: seatSize,
+                labelFontSize: (seatSize * 0.28).clamp(8.0, 14.0),
+                onTap: seat.isAvailable ? () => _toggleSeat(seat.seatId) : null,
+              ),
+            );
+          }).toList(),
+        ),
+      );
+    }
 
     final allRows = List<String>.generate(
       _totalRows,

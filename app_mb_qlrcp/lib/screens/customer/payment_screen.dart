@@ -3,7 +3,10 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../../models/movie.dart';
 import '../../models/showtime.dart';
 import '../../services/booking_service.dart';
+import '../../services/customer_service.dart';
+import '../../services/storage_service.dart';
 import '../../utils/app_theme.dart';
+import 'invoice_screen.dart';
 
 class PaymentScreen extends StatefulWidget {
   final Movie movie;
@@ -12,6 +15,8 @@ class PaymentScreen extends StatefulWidget {
   final List<int> selectedSeatIds;
   final List<Map<String, dynamic>> foodItems;
   final double totalAmount;
+  final double ticketTotal;
+  final double foodTotal;
 
   const PaymentScreen({
     Key? key,
@@ -21,6 +26,8 @@ class PaymentScreen extends StatefulWidget {
     required this.selectedSeatIds,
     required this.foodItems,
     required this.totalAmount,
+    required this.ticketTotal,
+    required this.foodTotal,
   }) : super(key: key);
 
   @override
@@ -28,33 +35,368 @@ class PaymentScreen extends StatefulWidget {
 }
 
 class _PaymentScreenState extends State<PaymentScreen> {
+  // ignore: unused_field
   final BookingService _bookingService = BookingService();
+  final CustomerService _customerService = CustomerService();
+  // ignore: unused_field
   late WebViewController _webViewController;
   bool _isLoading = true;
   String? _vnpayUrl;
   String? _errorMessage;
+  // Promo state
+  List<Map<String, dynamic>> _availablePromos = [];
+  Map<String, dynamic>? _selectedPromo;
+  String? _promoMessage;
+  bool _promoApplied = false;
+  late double _currentTotal;
+  int _customerId = 0;
+  // Payment confirmation state
+  bool _isConfirming = false;
+  String? _confirmingPromoCode;
 
   @override
   void initState() {
     super.initState();
+    _currentTotal = widget.totalAmount;
     _loadQRCode();
+    _loadAvailablePromos();
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
+
+  Future<void> _loadAvailablePromos() async {
+    try {
+      final storage = StorageService();
+      final user = await storage.getUser();
+      _customerId = user?.userId ?? 0;
+
+      if (_customerId <= 0) {
+        print('⚠️ Không tìm thấy customer ID');
+        return;
+      }
+
+      final resp = await _customerService.getAvailablePromoCodes(
+        _customerId,
+        widget.foodItems,
+      );
+
+      if (resp['success'] == true && resp['data'] is List) {
+        setState(() {
+          _availablePromos = List<Map<String, dynamic>>.from(
+            resp['data'].cast<Map<String, dynamic>>(),
+          );
+          print('✅ Loaded ${_availablePromos.length} available promos');
+        });
+      }
+    } catch (e) {
+      print('❌ Error loading promos: $e');
+    }
+  }
+
+  Future<void> _applySelectedPromo() async {
+    if (_selectedPromo == null) {
+      setState(() {
+        _promoMessage = 'Vui lòng chọn mã khuyến mãi';
+      });
+      return;
+    }
+
+    final code = _selectedPromo!['maKhuyen'] as String? ?? '';
+    if (code.isEmpty) {
+      setState(() {
+        _promoMessage = 'Mã khuyến mãi không hợp lệ';
+      });
+      return;
+    }
+
+    setState(() {
+      _promoMessage = 'Đang áp dụng mã...';
+    });
+
+    try {
+      final applyResp = await _customerService.applyPromoToBooking(
+        widget.bookingId,
+        code,
+        originalTotal: widget.totalAmount,
+      );
+
+      if (applyResp['success'] == true && applyResp['data'] != null) {
+        final applied = applyResp['data'];
+        double? appliedTotal;
+        if (applied is Map) {
+          appliedTotal =
+              (applied['final_total'] ??
+                      applied['finalTotal'] ??
+                      applied['total'] ??
+                      applied['amount'])
+                  is num
+              ? (applied['final_total'] ??
+                        applied['finalTotal'] ??
+                        applied['total'] ??
+                        applied['amount'])
+                    .toDouble()
+              : null;
+        }
+
+        setState(() {
+          _promoApplied = true;
+          _promoMessage =
+              applyResp['message'] ?? 'Áp dụng mã khuyến mãi thành công';
+          if (appliedTotal != null) _currentTotal = appliedTotal;
+        });
+
+        // Refresh QR code since total changed
+        await _loadQRCode();
+        return;
+      }
+
+      setState(() {
+        _promoMessage =
+            applyResp['message'] ?? 'Không thể áp dụng mã khuyến mãi';
+        _promoApplied = false;
+      });
+    } catch (e) {
+      setState(() {
+        _promoMessage = 'Lỗi khi áp dụng mã: $e';
+      });
+    }
+  }
+
+  void _removePromo() {
+    setState(() {
+      _selectedPromo = null;
+      _promoMessage = null;
+      _promoApplied = false;
+      _currentTotal = widget.totalAmount;
+    });
+  }
+
+  Future<void> _confirmPayment() async {
+    setState(() {
+      _isConfirming = true;
+      if (_promoApplied && _selectedPromo != null) {
+        _confirmingPromoCode = _selectedPromo!['maKhuyen'] as String?;
+      } else {
+        _confirmingPromoCode = null;
+      }
+    });
+
+    try {
+      final confirmResp = await _customerService.confirmQRPayment(
+        widget.bookingId,
+        promoCode: _confirmingPromoCode,
+      );
+
+      if (confirmResp['success'] == true) {
+        print('✅ Xác nhận thanh toán thành công, chờ Admin duyệt...');
+        // Show waiting dialog
+        if (mounted) {
+          _showWaitingForApprovalDialog();
+        }
+        // Start polling for booking status
+        await _pollBookingStatus();
+      } else {
+        setState(() {
+          _isConfirming = false;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                confirmResp['message'] ?? 'Xác nhận thanh toán thất bại',
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      setState(() {
+        _isConfirming = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Lỗi: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _pollBookingStatus() async {
+    int pollCount = 0;
+    const maxPolls = 60; // Poll for max 60 times (5 mins with 5s interval)
+    const pollInterval = Duration(seconds: 5);
+
+    while (pollCount < maxPolls && _isConfirming) {
+      await Future.delayed(pollInterval);
+      pollCount++;
+
+      try {
+        final bookingResp = await _customerService.getBookingDetail(
+          widget.bookingId,
+        );
+
+        if (bookingResp['success'] == true && bookingResp['data'] != null) {
+          final booking = bookingResp['data'];
+          final status = booking['status'] as String? ?? '';
+
+          print('📊 Poll $pollCount: Booking status = $status');
+
+          if (status == 'Đã duyệt' ||
+              status == 'Đã thanh toán' ||
+              status == 'Đã Thanh toán') {
+            setState(() {
+              _isConfirming = false;
+            });
+            if (mounted) {
+              Navigator.of(context).pop(); // Close waiting dialog
+              _showPaymentSuccessWithInvoice(booking);
+            }
+            return;
+          } else if (status == 'Đã hủy' || status == 'Bị từ chối') {
+            setState(() {
+              _isConfirming = false;
+            });
+            if (mounted) {
+              Navigator.of(context).pop(); // Close waiting dialog
+              _showPaymentFailedWithReason(booking);
+            }
+            return;
+          }
+          // Otherwise keep polling for "Chờ Duyệt"
+        }
+      } catch (e) {
+        print('❌ Poll error: $e');
+      }
+    }
+
+    // Timeout
+    setState(() {
+      _isConfirming = false;
+    });
+    if (mounted) {
+      Navigator.of(context).pop(); // Close waiting dialog
+      _showPaymentTimeout();
+    }
+  }
+
+  void _showWaitingForApprovalDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('⏳ Chờ Admin Duyệt'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 16),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              const Text('Đơn đặt vé của bạn đang chờ Admin duyệt...'),
+              const SizedBox(height: 8),
+              Text('Thời gian chờ tối đa: 5 phút', style: AppTheme.bodySmall),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showPaymentSuccessWithInvoice(Map<String, dynamic> booking) {
+    // Navigate to invoice screen instead of showing dialog
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => InvoiceScreen(booking: booking)),
+      );
+    }
+  }
+
+  void _showPaymentFailedWithReason(Map<String, dynamic> booking) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('❌ Đơn hàng bị hủy'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Đơn đặt vé của bạn đã bị Admin hủy.'),
+              const SizedBox(height: 12),
+              Text('Lý do: ${booking['cancellation_reason'] ?? 'Không rõ'}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(); // Close dialog
+                Navigator.of(context).pop(); // Go back to payment screen
+              },
+              child: const Text('Quay lại'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showPaymentTimeout() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('⏱️ Hết thời gian chờ'),
+          content: const Text(
+            'Admin chưa duyệt đơn trong thời gian quy định. Vui lòng kiểm tra trạng thái đơn hàng sau.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(); // Close dialog
+                Navigator.of(context).pop(); // Go back to payment screen
+              },
+              child: const Text('Quay lại'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _loadQRCode() async {
     try {
       setState(() => _isLoading = true);
-      final result = await _bookingService.getQRCode(widget.bookingId);
 
-      if (result['success'] == true) {
+      // Prefer CustomerService invoice QR endpoint (matches backend)
+      final resp = await _customerService.getInvoiceQRCode(widget.bookingId);
+
+      if (resp['success'] == true && resp['data'] != null) {
+        final data = resp['data'];
         setState(() {
-          _vnpayUrl = result['qrCodeUrl'];
+          _vnpayUrl =
+              (data['qr_code_url'] ??
+                      data['qrCodeUrl'] ??
+                      data['qr_code'] ??
+                      '')
+                  .toString();
           _isLoading = false;
         });
         print('✅ QR Code loaded: ${_vnpayUrl}');
       } else {
         setState(() {
           _isLoading = false;
-          _errorMessage = result['message'] ?? 'Lỗi lấy mã QR';
+          final serverInfo = resp['server'];
+          _errorMessage = resp['message'] ?? 'Lỗi lấy mã QR';
+          if (serverInfo != null) {
+            // Append server response for easier debugging
+            _errorMessage = '$_errorMessage\nServer: ${serverInfo.toString()}';
+          }
         });
       }
     } catch (e) {
@@ -65,6 +407,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
     }
   }
 
+  // ignore: unused_element
   void _handlePaymentCallback(String url) {
     // Handle payment success/failure
     if (url.contains('success') || url.contains('00')) {
@@ -122,26 +465,19 @@ class _PaymentScreenState extends State<PaymentScreen> {
     );
   }
 
-  // Calculate breakdown
-  double _calculateTicketTotal() {
-    // This would be passed from previous screen in real implementation
-    return widget.totalAmount * 0.7; // Assume 70% is tickets
+  // Use actual amounts from booking API
+  double _getTicketTotal() {
+    return widget.ticketTotal;
   }
 
-  double _calculateFoodTotal() {
-    double total = 0;
-    for (var item in widget.foodItems) {
-      final price = (item['price'] as num?) ?? 0;
-      final quantity = (item['quantity'] as int?) ?? 0;
-      total += price.toDouble() * quantity;
-    }
-    return total;
+  double _getFoodTotal() {
+    return widget.foodTotal;
   }
 
   @override
   Widget build(BuildContext context) {
-    final ticketTotal = _calculateTicketTotal();
-    final foodTotal = _calculateFoodTotal();
+    final ticketTotal = _getTicketTotal();
+    final foodTotal = _getFoodTotal();
 
     return WillPopScope(
       onWillPop: () async {
@@ -265,13 +601,168 @@ class _PaymentScreenState extends State<PaymentScreen> {
                             const Divider(height: 16),
                             _buildPriceRow(
                               'Tổng cộng:',
-                              widget.totalAmount,
+                              _currentTotal,
                               isBold: true,
                               isLarge: true,
                               color: AppTheme.primaryOrange,
                             ),
                           ],
                         ),
+                      ),
+                    ),
+
+                    // Promo code
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16.0,
+                        vertical: 8,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Mã khuyến mãi', style: AppTheme.headingSmall),
+                          const SizedBox(height: 8),
+                          if (_availablePromos.isEmpty)
+                            Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(16.0),
+                                child: Text(
+                                  'Không có mã khuyến mãi nào phù hợp',
+                                  style: AppTheme.bodySmall,
+                                ),
+                              ),
+                            )
+                          else
+                            Column(
+                              children: [
+                                // Dropdown to select promo
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    border: Border.all(color: Colors.grey),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: DropdownButton<Map<String, dynamic>>(
+                                    isExpanded: true,
+                                    underline: const SizedBox(),
+                                    hint: const Text('Chọn mã khuyến mãi'),
+                                    value: _selectedPromo,
+                                    onChanged: _promoApplied
+                                        ? null
+                                        : (Map<String, dynamic>? value) {
+                                            setState(() {
+                                              _selectedPromo = value;
+                                              _promoMessage = null;
+                                            });
+                                          },
+                                    items: _availablePromos.map((promo) {
+                                      final isApplicable =
+                                          promo['isApplicable'] == true;
+                                      final moTa = promo['moTa'] ?? '';
+                                      final reason = promo['reason'] ?? '';
+                                      final displayText =
+                                          '${promo['maKhuyen']} - ${isApplicable ? moTa : reason}';
+
+                                      return DropdownMenuItem<
+                                        Map<String, dynamic>
+                                      >(
+                                        value: promo,
+                                        enabled: isApplicable,
+                                        child: Text(
+                                          displayText,
+                                          style: TextStyle(
+                                            color: isApplicable
+                                                ? Colors.black
+                                                : Colors.grey,
+                                          ),
+                                        ),
+                                      );
+                                    }).toList(),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                // Show selected promo details
+                                if (_selectedPromo != null &&
+                                    _selectedPromo!['isApplicable'] == true)
+                                  Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFF9E6),
+                                      border: Border.all(
+                                        color: const Color(0xFFFFD966),
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          _selectedPromo!['moTa'] ?? '',
+                                          style: AppTheme.bodySmall.copyWith(
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          'Giảm: ${_selectedPromo!['giaTriGiam']} ${_selectedPromo!['loaiGiam'] == '%' ? '%' : 'đ'}',
+                                          style: AppTheme.bodySmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                const SizedBox(height: 8),
+                                // Apply/Remove buttons
+                                Row(
+                                  children: [
+                                    if (_selectedPromo != null &&
+                                        _selectedPromo!['isApplicable'] ==
+                                            true) ...[
+                                      Expanded(
+                                        child: ElevatedButton(
+                                          onPressed: _promoApplied
+                                              ? null
+                                              : _applySelectedPromo,
+                                          child: const Text('Áp dụng'),
+                                        ),
+                                      ),
+                                    ] else if (_selectedPromo != null) ...[
+                                      Expanded(
+                                        child: ElevatedButton(
+                                          onPressed: null,
+                                          child: Text(
+                                            _selectedPromo!['reason'] ??
+                                                'Không phù hợp',
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                    if (_promoApplied) ...[
+                                      const SizedBox(width: 8),
+                                      ElevatedButton.icon(
+                                        onPressed: _removePromo,
+                                        icon: const Icon(Icons.close),
+                                        label: const Text('Gỡ'),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ],
+                            ),
+                          if (_promoMessage != null) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              _promoMessage!,
+                              style: AppTheme.bodySmall.copyWith(
+                                color: _promoApplied
+                                    ? Colors.green
+                                    : Colors.red,
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
 
@@ -282,7 +773,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Quét Mã QR Để Thanh Toán', style: AppTheme.headingSmall),
+                            Text(
+                              'Quét Mã QR Để Thanh Toán',
+                              style: AppTheme.headingSmall,
+                            ),
                             const SizedBox(height: 12),
                             Container(
                               decoration: BoxDecoration(
@@ -303,33 +797,51 @@ class _PaymentScreenState extends State<PaymentScreen> {
                                     child: Image.network(
                                       _vnpayUrl!,
                                       fit: BoxFit.contain,
-                                      errorBuilder: (context, error, stackTrace) {
-                                        return Center(
-                                          child: Column(
-                                            mainAxisAlignment: MainAxisAlignment.center,
-                                            children: [
-                                              const Icon(Icons.error, size: 48, color: Colors.red),
-                                              const SizedBox(height: 8),
-                                              const Text('Không thể tải mã QR'),
-                                              const SizedBox(height: 8),
-                                              ElevatedButton(
-                                                onPressed: _loadQRCode,
-                                                child: const Text('Tải lại'),
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                            return Center(
+                                              child: Column(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.center,
+                                                children: [
+                                                  const Icon(
+                                                    Icons.error,
+                                                    size: 48,
+                                                    color: Colors.red,
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  const Text(
+                                                    'Không thể tải mã QR',
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  ElevatedButton(
+                                                    onPressed: _loadQRCode,
+                                                    child: const Text(
+                                                      'Tải lại',
+                                                    ),
+                                                  ),
+                                                ],
                                               ),
-                                            ],
-                                          ),
-                                        );
-                                      },
-                                      loadingBuilder: (context, child, loadingProgress) {
-                                        if (loadingProgress == null) return child;
-                                        return Center(
-                                          child: CircularProgressIndicator(
-                                            value: loadingProgress.expectedTotalBytes != null
-                                                ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
-                                                : null,
-                                          ),
-                                        );
-                                      },
+                                            );
+                                          },
+                                      loadingBuilder:
+                                          (context, child, loadingProgress) {
+                                            if (loadingProgress == null)
+                                              return child;
+                                            return Center(
+                                              child: CircularProgressIndicator(
+                                                value:
+                                                    loadingProgress
+                                                            .expectedTotalBytes !=
+                                                        null
+                                                    ? loadingProgress
+                                                              .cumulativeBytesLoaded /
+                                                          loadingProgress
+                                                              .expectedTotalBytes!
+                                                    : null,
+                                              ),
+                                            );
+                                          },
                                     ),
                                   ),
                                   const SizedBox(height: 16),
@@ -346,21 +858,25 @@ class _PaymentScreenState extends State<PaymentScreen> {
                                       borderRadius: BorderRadius.circular(8),
                                     ),
                                     child: Column(
-                                      children: [
-                                        Text(
-                                          'Số tiền: ${widget.totalAmount.toStringAsFixed(0).replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ',')} đ',
-                                          style: AppTheme.bodySmall.copyWith(fontWeight: FontWeight.bold),
-                                        ),
-                                      ],
+                                      // children: [
+                                      //   // Text(
+                                      //   //   'Số tiền: ${widget.totalAmount.toStringAsFixed(0).replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ',')} đ',
+                                      //   //   style: AppTheme.bodySmall.copyWith(
+                                      //   //     fontWeight: FontWeight.bold,
+                                      //   //   ),
+                                      //   // ),
+                                      // ],
                                     ),
                                   ),
                                   const SizedBox(height: 16),
                                   ElevatedButton.icon(
-                                    onPressed: () {
-                                      _showPaymentSuccess();
-                                    },
+                                    onPressed: _isConfirming
+                                        ? null
+                                        : _confirmPayment,
                                     icon: const Icon(Icons.check_circle),
-                                    label: const Text('Đã Thanh Toán'),
+                                    label: _isConfirming
+                                        ? const Text('Đang xác nhận...')
+                                        : const Text('Đã Thanh Toán'),
                                   ),
                                 ],
                               ),
@@ -375,10 +891,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'Ghi Chú',
-                            style: AppTheme.headingSmall,
-                          ),
+                          Text('Ghi Chú', style: AppTheme.headingSmall),
                           const SizedBox(height: 12),
                           Container(
                             padding: const EdgeInsets.all(12),
@@ -402,7 +915,6 @@ class _PaymentScreenState extends State<PaymentScreen> {
               ),
       ),
     );
-  }
   }
 
   Widget _buildSummaryRow(String label, String value) {

@@ -40,12 +40,16 @@ class MovieService {
     }
   }
 
-  Future<Map<String, dynamic>> getMovieDetail(int movieId) async {
+  Future<Map<String, dynamic>> getMovieDetail(
+    int movieId, {
+    bool includeInactive = true,
+  }) async {
     try {
       final dio = getHttpClient();
-      final response = await dio.get(
-        '${ApiConstants.apiCustomer}/movie/$movieId',
-      );
+      final uri =
+          '${ApiConstants.apiCustomer}/movie/$movieId' +
+          (includeInactive ? '?includeInactive=true' : '');
+      final response = await dio.get(uri);
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = response.data;
         print('🎬 MovieDetail API Response: $data');
@@ -101,14 +105,18 @@ class MovieService {
   }
 
   // GetSeats: data: { seats, rows, columns, ... } (object)
-  Future<Map<String, dynamic>> getSeats(int showtimeId) async {
+  Future<Map<String, dynamic>> getSeats(
+    int showtimeId, {
+    bool flat = false,
+  }) async {
     try {
       final dio = getHttpClient();
       // Backend seats endpoint is: /api/customer/seats/{showtimeId}
       print(
-        '➡️ Requesting seats for showtimeId=$showtimeId -> ${ApiConstants.seats}/$showtimeId',
+        '➡️ Requesting seats for showtimeId=$showtimeId (flat=$flat) -> ${ApiConstants.seats}/$showtimeId',
       );
-      final response = await dio.get('${ApiConstants.seats}/$showtimeId');
+      final uri = '${ApiConstants.seats}/$showtimeId' + (flat ? '?flat=1' : '');
+      final response = await dio.get(uri);
       print('⬅️ Seats response status: ${response.statusCode}');
       try {
         print('⬅️ Seats response data: ${response.data}');

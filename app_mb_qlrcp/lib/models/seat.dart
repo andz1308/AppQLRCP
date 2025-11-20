@@ -23,7 +23,6 @@ class Seat {
 
   factory Seat.fromJson(Map<String, dynamic> json) {
     final seatType = json['seat_type'] as Map<String, dynamic>?;
-
     // ✅ Handle row: Could be String (from API) or int (from old format)
     String rowValue = '';
     final rowData = json['row'];
@@ -31,18 +30,90 @@ class Seat {
       rowValue = rowData;
     } else if (rowData is int) {
       rowValue = String.fromCharCode(65 + rowData); // Convert 0->A, 1->B, etc.
+    } else if (rowData is double) {
+      // sometimes numeric comes as double
+      rowValue = String.fromCharCode(65 + rowData.toInt());
+    }
+
+    // seat number fallback (treat "N/A" as missing)
+    String seatNumber = '';
+    final rawSeatNum = (json['seat_number'] ?? json['seatNumber'])?.toString();
+    if (rawSeatNum != null &&
+        rawSeatNum.trim().isNotEmpty &&
+        rawSeatNum.trim().toLowerCase() != 'n/a') {
+      seatNumber = rawSeatNum.trim();
+    } else {
+      // fallback to row+column if explicit seat number missing
+      final col = json['column'] ?? json['col'] ?? 0;
+      final colNum = (col is int)
+          ? col
+          : (col is double
+                ? col.toInt()
+                : int.tryParse(col?.toString() ?? '') ?? 0);
+      seatNumber =
+          (rowValue.isNotEmpty ? rowValue : '') +
+          (colNum > 0 ? colNum.toString() : '');
+    }
+
+    // If row is missing but seatNumber contains a leading letter(s) (e.g., A10), extract row
+    if (rowValue.isEmpty && seatNumber.isNotEmpty) {
+      final match = RegExp(r'^([A-Za-z]+)').firstMatch(seatNumber);
+      if (match != null) {
+        rowValue = match.group(1) ?? '';
+      }
+    }
+
+    // parse price robustly
+    double priceValue = 0.0;
+    final priceRaw = json['price'];
+    if (priceRaw is int)
+      priceValue = priceRaw.toDouble();
+    else if (priceRaw is double)
+      priceValue = priceRaw;
+    else if (priceRaw is String)
+      priceValue = double.tryParse(priceRaw) ?? 0.0;
+
+    // parse seat type fields robustly
+    int? parsedTypeId;
+    String? parsedTypeName;
+    double parsedSurcharge = 0.0;
+    if (seatType != null) {
+      final rawId =
+          seatType['type_id'] ?? seatType['typeId'] ?? seatType['loaighe_id'];
+      if (rawId is int)
+        parsedTypeId = rawId;
+      else if (rawId is double)
+        parsedTypeId = rawId.toInt();
+      else if (rawId is String)
+        parsedTypeId = int.tryParse(rawId);
+
+      parsedTypeName = (seatType['name'] ?? seatType['ten_loai'])?.toString();
+
+      final rawS = seatType['surcharge'] ?? seatType['phu_phi'];
+      if (rawS is int)
+        parsedSurcharge = rawS.toDouble();
+      else if (rawS is double)
+        parsedSurcharge = rawS;
+      else if (rawS is String)
+        parsedSurcharge = double.tryParse(rawS) ?? 0.0;
     }
 
     return Seat(
-      seatId: json['seat_id'] ?? 0,
-      seatNumber: json['seat_number'] ?? '',
+      seatId: json['seat_id'] is int
+          ? json['seat_id']
+          : int.tryParse(json['seat_id']?.toString() ?? '') ?? 0,
+      seatNumber: seatNumber,
       row: rowValue,
-      column: json['column'] ?? 0,
+      column: json['column'] is int
+          ? json['column']
+          : (json['column'] is double
+                ? (json['column'] as double).toInt()
+                : int.tryParse(json['column']?.toString() ?? '') ?? 0),
       status: json['status'] ?? 'available',
-      price: (json['price'] ?? 0).toDouble(),
-      seatTypeId: seatType?['type_id'] as int?,
-      seatTypeName: seatType?['name'] as String?,
-      surcharge: (seatType?['surcharge'] ?? 0).toDouble(),
+      price: priceValue,
+      seatTypeId: parsedTypeId,
+      seatTypeName: parsedTypeName,
+      surcharge: parsedSurcharge,
     );
   }
 

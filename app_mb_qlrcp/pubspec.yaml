@@ -27,6 +27,8 @@ dependencies:
   dio: ^5.9.0
   cookie_jar: ^4.0.8
   path_provider: ^2.1.5
+  pdf: ^3.10.0
+  printing: ^5.11.0
 
 dev_dependencies:
   flutter_test:
