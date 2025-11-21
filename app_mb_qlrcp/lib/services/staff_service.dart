@@ -117,12 +117,63 @@ class StaffService {
       if (response.statusCode == 200) {
         final data = response.data as Map<String, dynamic>;
         return {
-          'success': data['success'],
-          'message': data['message'],
+          'success': data['success'] ?? false,
+          'message': data['message'] ?? '',
           'data': data['data'],
         };
       }
-      return {'success': false, 'message': 'Xác thực thất bại'};
+      return {
+        'success': false,
+        'message': 'Xác thực thất bại (${response.statusCode})',
+      };
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) {
+        return {'success': false, 'message': 'Vui lòng đăng nhập lại'};
+      } else if (e.response?.statusCode == 403) {
+        return {'success': false, 'message': 'Bạn không có quyền soát vé'};
+      } else if (e.response?.statusCode == 500) {
+        return {'success': false, 'message': 'Lỗi máy chủ - Vui lòng thử lại'};
+      }
+      return {'success': false, 'message': 'Lỗi kết nối: ${e.message}'};
+    } catch (e) {
+      return {'success': false, 'message': 'Lỗi: ${e.toString()}'};
+    }
+  }
+
+  Future<Map<String, dynamic>> getStaffProfile(int staffId) async {
+    try {
+      final dio = getHttpClient();
+      final response = await dio.get(
+        '${ApiConstants.apiStaff}/profile/$staffId',
+      );
+      if (response.statusCode == 200) {
+        final data = response.data as Map<String, dynamic>;
+        if (data['success'] == true && data['data'] != null) {
+          return {'success': true, 'data': data['data']};
+        }
+      }
+      return {'success': false, 'message': 'Không thể tải thông tin nhân viên'};
+    } catch (e) {
+      return {'success': false, 'message': 'Lỗi: ${e.toString()}'};
+    }
+  }
+
+  Future<Map<String, dynamic>> updateStaffProfile(
+    int staffId,
+    Map<String, dynamic> profileData,
+  ) async {
+    try {
+      final dio = getHttpClient();
+      final response = await dio.put(
+        '${ApiConstants.apiStaff}/profile/$staffId',
+        options: Options(headers: jsonHeaders()),
+        data: profileData,
+      );
+      if (response.statusCode == 200) {
+        final data = response.data as Map<String, dynamic>;
+        return {'success': data['success'], 'message': data['message']};
+      }
+      return {'success': false, 'message': 'Cập nhật thất bại'};
     } catch (e) {
       return {'success': false, 'message': 'Lỗi: ${e.toString()}'};
     }

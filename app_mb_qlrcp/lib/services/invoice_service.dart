@@ -77,7 +77,28 @@ class InvoiceService {
     }
   }
 
-  /// Tạo PDF hóa đơn từ dữ liệu booking
+  /// Tạo QR code image bytes để embed trong PDF
+  static Future<Uint8List?> generateQRImageBytes(String data) async {
+    try {
+      final qrImage = await QrPainter(
+        data: data,
+        version: QrVersions.auto,
+        gapless: false,
+      ).toImageData(150);
+
+      if (qrImage == null) {
+        print('❌ Không thể tạo QR code image');
+        return null;
+      }
+
+      return qrImage.buffer.asUint8List();
+    } catch (e) {
+      print('❌ Error generating QR image bytes: $e');
+      return null;
+    }
+  }
+
+  /// Tạo PDF hóa đơn từ dữ liệu booking với QR code images
   static Future<void> generateAndSaveInvoicePDF(
     Map<String, dynamic> booking,
   ) async {
@@ -97,6 +118,15 @@ class InvoiceService {
       final date = booking['showtime']?['date']?.toString() ?? 'N/A';
       final time = booking['showtime']?['time']?.toString() ?? 'N/A';
       final tickets = booking['tickets'] as List? ?? [];
+
+      // Generate QR images for each ticket
+      final ticketQRImages = <String, Uint8List?>{};
+      for (final ticket in tickets) {
+        final qrCode = ticket['qr_code']?.toString() ?? '';
+        if (qrCode.isNotEmpty) {
+          ticketQRImages[qrCode] = await generateQRImageBytes(qrCode);
+        }
+      }
 
       // Tạo page PDF
       pdf.addPage(
@@ -202,6 +232,8 @@ class InvoiceService {
                   final seatNumber = ticket['seat_number']?.toString() ?? 'N/A';
                   final qrCode = ticket['qr_code']?.toString() ?? 'N/A';
                   final price = ticket['price']?.toString() ?? '0';
+                  final qrImageBytes = ticketQRImages[qrCode];
+
                   return pw.TableRow(
                     children: [
                       pw.Padding(
@@ -210,12 +242,18 @@ class InvoiceService {
                       ),
                       pw.Padding(
                         padding: const pw.EdgeInsets.all(8),
-                        child: pw.Text(
-                          qrCode.length > 20
-                              ? '${qrCode.substring(0, 20)}...'
-                              : qrCode,
-                          style: const pw.TextStyle(fontSize: 9),
-                        ),
+                        child: qrImageBytes != null
+                            ? pw.Image(
+                                pw.MemoryImage(qrImageBytes),
+                                width: 60,
+                                height: 60,
+                              )
+                            : pw.Text(
+                                qrCode.length > 20
+                                    ? '${qrCode.substring(0, 20)}...'
+                                    : qrCode,
+                                style: const pw.TextStyle(fontSize: 9),
+                              ),
                       ),
                       pw.Padding(
                         padding: const pw.EdgeInsets.all(8),
@@ -255,8 +293,8 @@ class InvoiceService {
       );
 
       // Lưu PDF
-      final output = await getDownloadsDirectory();
-      final file = File('${output?.path}/Invoice_$bookingId.pdf');
+      final output = await getApplicationDocumentsDirectory();
+      final file = File('${output.path}/Invoice_$bookingId.pdf');
       await file.writeAsBytes(await pdf.save());
 
       print('✅ Invoice PDF saved: ${file.path}');
@@ -268,8 +306,8 @@ class InvoiceService {
   /// Mở PDF để xem/in
   static Future<void> openInvoicePDF(String bookingId) async {
     try {
-      final output = await getDownloadsDirectory();
-      final file = File('${output?.path}/Invoice_$bookingId.pdf');
+      final output = await getApplicationDocumentsDirectory();
+      final file = File('${output.path}/Invoice_$bookingId.pdf');
 
       if (file.existsSync()) {
         await Printing.sharePdf(

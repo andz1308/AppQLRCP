@@ -336,4 +336,49 @@ class CustomerService {
       return {'success': false, 'message': 'Error: ${e.toString()}'};
     }
   }
+
+  Future<Map<String, dynamic>> getMyTickets(int customerId) async {
+    try {
+      final dio = getHttpClient();
+      final url = '${ApiConstants.apiCustomer}/my-tickets/$customerId';
+      final response = await dio.get(
+        url,
+        options: Options(headers: jsonHeaders()),
+      );
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = response.data;
+        return {
+          'success': data['success'] ?? false,
+          'message': data['message'] ?? '',
+          'data': data['data'],
+        };
+      }
+      return {'success': false, 'message': 'HTTP ${response.statusCode}'};
+    } catch (e) {
+      return {'success': false, 'message': 'Error: ${e.toString()}'};
+    }
+  }
+
+  Future<Map<String, dynamic>> generateSeatQRCode(int ticketId) async {
+    try {
+      final dio = getHttpClient();
+      final url = '${ApiConstants.apiCustomer}/generate-seat-qr';
+      final response = await dio.post(
+        url,
+        data: {'ticket_id': ticketId},
+        options: Options(headers: jsonHeaders()),
+      );
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = response.data;
+        return {
+          'success': data['success'] ?? false,
+          'message': data['message'] ?? '',
+          'data': data['data'],
+        };
+      }
+      return {'success': false, 'message': 'HTTP ${response.statusCode}'};
+    } catch (e) {
+      return {'success': false, 'message': 'Error: ${e.toString()}'};
+    }
+  }
 }

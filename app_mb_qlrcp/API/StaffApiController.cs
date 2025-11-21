@@ -413,6 +413,7 @@ namespace WebCinema.Controllers.API
         /// POST: api/staff/verify-ticket
         /// Soát vé (quét QR code)
         /// ✅ Yêu cầu xác thực
+        /// ✅ Kiểm tra quyền rạp
         /// </summary>
         [HttpPost]
         [Route("verify-ticket")]
@@ -434,43 +435,80 @@ namespace WebCinema.Controllers.API
                     return BadRequest("Mã QR không được rỗng");
                 }
 
+                // ✅ Parse Staff ID with better error handling
+                int staffId = 0;
+                if (!int.TryParse(User.Identity.Name, out staffId) || staffId <= 0)
+                {
+                    LoggingHelper.LogError($"❌ Invalid staff authentication: {User.Identity.Name}");
+                    return Unauthorized();
+                }
+
                 var ticket = db.Ves.FirstOrDefault(v => v.ma_qr_code == qrCode.Trim());
                 if (ticket == null)
                 {
                     return Ok(new { success = false, message = "Mã QR không hợp lệ" });
                 }
 
+                // ✅ Check if showtime exists and is loaded
+                if (ticket.Suat_Chieu == null)
+                {
+                    LoggingHelper.LogError($"❌ Showtime not found for ticket: {qrCode}");
+                    return Ok(new { success = false, message = "Không tìm thấy suất chiếu cho vé này" });
+                }
+
+                var showtime = ticket.Suat_Chieu;
+
+                // ✅ Check if phong chieu and rap are loaded
+                if (showtime.Phong_Chieu == null || showtime.Phong_Chieu.Rap == null)
+                {
+                    LoggingHelper.LogError($"❌ Cinema data not found for showtime: {showtime.Suat_Chieu_id}");
+                    return Ok(new { success = false, message = "Dữ liệu rạp không tìm thấy" });
+                }
+
+                // ✅ KIỂM TRA QUYỀN: Staff chỉ soát vé của rạp mình
+                var staff = db.Nhan_Viens.FirstOrDefault(nv => nv.nhanvien_id == staffId);
+                if (staff != null && staff.rap_id.HasValue)
+                {
+                    // Staff có gán rạp → chỉ soát vé của rạp đó
+                    if (showtime.Phong_Chieu.rap_id != staff.rap_id.Value)
+                    {
+                        LoggingHelper.LogInfo($"❌ Staff {staffId} cố soát vé của rạp khác: {qrCode}");
+                        return Ok(new { success = false, message = "❌ Bạn không có quyền soát vé này. Vé này thuộc rạp khác." });
+                    }
+                }
+                // Nếu staff không có gán rạp (là Admin) → cho soát tất cả
+
                 if (ticket.trang_thai_ve == "Đã sử dụng")
                 {
-                    return Ok(new { success = false, message = "Vé này đã được sử dụng rồi" });
+                    return Ok(new { success = false, message = "⚠️ Vé này đã được sử dụng rồi" });
                 }
 
                 // Cập nhật trạng thái vé
                 ticket.trang_thai_ve = "Đã sử dụng";
                 db.SubmitChanges();
 
-                var showtime = ticket.Suat_Chieu;
                 var booking = ticket.Dat_Ve;
 
-                LoggingHelper.LogInfo($"✅ Soát vé: {qrCode}");
+                LoggingHelper.LogInfo($"✅ Soát vé (API): {qrCode} | Rạp: {showtime.Phong_Chieu.Rap.ten_rap}");
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Vé hợp lệ",
+                    message = "✅ Vé hợp lệ",
                     data = new
                     {
-                        movie_title = showtime?.Phim.ten_phim ?? "N/A",
-                        customer_name = booking?.Khach_Hang.ho_ten ?? "N/A",
+                        movie_title = showtime?.Phim?.ten_phim ?? "N/A",
+                        customer_name = booking?.Khach_Hang?.ho_ten ?? "N/A",
                         seat_number = ticket.Ghe?.so_ghe ?? "N/A",
                         date = showtime?.ngay_chieu.ToString("yyyy-MM-dd") ?? "N/A",
-                        time = showtime?.Ca_Chieu.gio_bat_dau.ToString(@"hh\:mm") ?? "N/A"
+                        time = showtime?.Ca_Chieu?.gio_bat_dau.ToString(@"hh\:mm") ?? "N/A",
+                        cinema = showtime?.Phong_Chieu?.Rap?.ten_rap ?? "N/A"
                     }
                 });
             }
             catch (Exception ex)
             {
-                LoggingHelper.LogError(ex);
+                LoggingHelper.LogError($"❌ VerifyTicket Error: {ex.Message}\n{ex.StackTrace}");
                 return InternalServerError(ex);
             }
         }
@@ -720,6 +758,279 @@ namespace WebCinema.Controllers.API
                     success = true,
                     message = "Lấy thông tin phim thành công",
                     data = movieData
+                });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex);
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// GET: api/staff/profile/{staffId}
+        /// Lấy thông tin chi tiết Staff (Nhân viên)
+        /// ✅ Yêu cầu xác thực
+        /// </summary>
+        [HttpGet]
+        [Route("profile/{staffId}")]
+        public IHttpActionResult GetStaffProfile(int staffId)
+        {
+            try
+            {
+                if (staffId <= 0)
+                    return BadRequest("Staff ID không hợp lệ");
+
+                var staff = db.Nhan_Viens.FirstOrDefault(nv => nv.nhanvien_id == staffId);
+                if (staff == null)
+                    return NotFound();
+
+                var profile = new
+                {
+                    staff_id = staff.nhanvien_id,
+                    full_name = staff.ho_ten,
+                    email = staff.email,
+                    phone = staff.so_dien_thoai,
+                    date_of_birth = staff.ngay_sinh.HasValue ? staff.ngay_sinh.Value.ToString("yyyy-MM-dd") : null,
+                    gender = staff.gioi_tinh ?? "N/A",
+                    address = staff.dia_chi ?? "N/A",
+                    role = staff.Role != null ? staff.Role.ten_role : "N/A",
+                    cinema = staff.Rap != null ? new
+                    {
+                        cinema_id = staff.Rap.rap_id,
+                        name = staff.Rap.ten_rap
+                    } : null,
+                    status = staff.trang_thai ?? "N/A",
+                    join_date = staff.ngay_vao_lam.HasValue ? staff.ngay_vao_lam.Value.ToString("yyyy-MM-dd") : "N/A"
+                };
+
+                LoggingHelper.LogInfo($"✅ Lấy thông tin Staff: ID {staffId}");
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Lấy thông tin nhân viên thành công",
+                    data = profile
+                });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex);
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// PUT: api/staff/profile/{staffId}
+        /// Cập nhật thông tin Staff (Nhân viên)
+        /// ✅ Yêu cầu xác thực
+        /// </summary>
+        [HttpPut]
+        [Route("profile/{staffId}")]
+        public IHttpActionResult UpdateStaffProfile(int staffId, [FromBody] JObject data)
+        {
+            try
+            {
+                if (staffId <= 0)
+                    return BadRequest("Staff ID không hợp lệ");
+
+                var staff = db.Nhan_Viens.FirstOrDefault(nv => nv.nhanvien_id == staffId);
+                if (staff == null)
+                    return NotFound();
+
+                // ✅ Cập nhật các field được phép
+                if (data["full_name"] != null)
+                    staff.ho_ten = data["full_name"].Value<string>();
+
+                if (data["phone"] != null)
+                    staff.so_dien_thoai = data["phone"].Value<string>();
+
+                if (data["date_of_birth"] != null && DateTime.TryParse(data["date_of_birth"].Value<string>(), out var dob))
+                    staff.ngay_sinh = dob;
+
+                if (data["gender"] != null)
+                    staff.gioi_tinh = data["gender"].Value<string>();
+
+                if (data["address"] != null)
+                    staff.dia_chi = data["address"].Value<string>();
+
+                db.SubmitChanges();
+
+                LoggingHelper.LogInfo($"✅ Cập nhật thông tin Staff: ID {staffId}");
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Cập nhật thông tin nhân viên thành công"
+                });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex);
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// POST: api/staff/verify-ticket-web
+        /// Soát vé theo Web (Giống web version ở TicketRefundController)
+        /// ✅ Yêu cầu xác thực (Staff)
+        /// ✅ Kiểm tra quyền rạp
+        /// ✅ Hỗ trợ soát vé qua ticket_id hoặc qr_code
+        /// </summary>
+        [HttpPost]
+        [Route("verify-ticket-web")]
+        public IHttpActionResult VerifyTicketWeb([FromBody] JObject data)
+        {
+            try
+            {
+                if (data == null)
+                    return BadRequest("Request body is required");
+
+                // ✅ Chấp nhận cả ticket_id hoặc qr_code
+                int? ticketId = data["ticket_id"]?.Value<int>();
+                string qrCode = data["qr_code"]?.Value<string>();
+
+                Ve ticket = null;
+
+                // Tìm ticket
+                if (ticketId.HasValue && ticketId > 0)
+                {
+                    ticket = db.Ves.FirstOrDefault(v => v.ve_id == ticketId.Value);
+                }
+                else if (!string.IsNullOrWhiteSpace(qrCode))
+                {
+                    ticket = db.Ves.FirstOrDefault(v => v.ma_qr_code == qrCode.Trim());
+                }
+                else
+                {
+                    return BadRequest("Phải cung cấp ticket_id hoặc qr_code");
+                }
+
+                if (ticket == null)
+                    return Ok(new { success = false, message = "❌ Vé không tồn tại hoặc mã QR không hợp lệ" });
+
+                var showtime = ticket.Suat_Chieu;
+
+                // ✅ KIỂM TRA QUYỀN: Staff chỉ soát vé của rạp mình
+                var staffId = int.Parse(User.Identity.Name ?? "0");
+                if (staffId > 0)
+                {
+                    var staff = db.Nhan_Viens.FirstOrDefault(nv => nv.nhanvien_id == staffId);
+                    if (staff != null && staff.rap_id.HasValue)
+                    {
+                        // Staff có gán rạp → chỉ soát vé của rạp đó
+                        if (showtime.Phong_Chieu.rap_id != staff.rap_id.Value)
+                        {
+                            LoggingHelper.LogInfo($"❌ Staff {staffId} cố soát vé của rạp khác: Ticket {ticketId}");
+                            return Ok(new { success = false, message = "❌ Bạn không có quyền soát vé này. Vé này thuộc rạp khác." });
+                        }
+                    }
+                }
+
+                // ✅ KIỂM TRA TRẠNG THÁI VÉ
+                if (ticket.trang_thai_ve == "Đã sử dụng")
+                {
+                    return Ok(new { success = false, message = "⚠️ Vé này đã được sử dụng rồi" });
+                }
+
+                // ✅ KIỂM TRA VÉ CÓ THUỘC ĐƠN ĐÃ THANH TOÁN KHÔNG
+                var booking = ticket.Dat_Ve;
+                if (booking == null || booking.trang_thai_Dat_Ve != "Đã Thanh toán")
+                {
+                    return Ok(new { success = false, message = "⚠️ Đơn đặt chưa được thanh toán hoặc vé không hợp lệ" });
+                }
+
+                // ✅ CẬP NHẬT TRẠNG THÁI VÉ
+                ticket.trang_thai_ve = "Đã sử dụng";
+                db.SubmitChanges();
+
+                LoggingHelper.LogInfo($"✅ Soát vé (Web): Ticket {ticket.ve_id} | QR: {ticket.ma_qr_code} | Rạp: {showtime.Phong_Chieu.Rap.ten_rap}");
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "✅ Vé hợp lệ - Đã soát vé thành công",
+                    data = new
+                    {
+                        ticket_id = ticket.ve_id,
+                        movie_title = showtime.Phim.ten_phim,
+                        customer_name = booking.Khach_Hang.ho_ten,
+                        seat_number = ticket.Ghe?.so_ghe ?? "N/A",
+                        seat_location = (ticket.Ghe != null) ? $"Hàng {(char)('A' + ticket.Ghe.hang)} - Cột {ticket.Ghe.cot}" : "N/A",
+                        date = showtime.ngay_chieu.ToString("yyyy-MM-dd"),
+                        time = showtime.Ca_Chieu.gio_bat_dau.ToString(@"hh\:mm"),
+                        cinema = showtime.Phong_Chieu.Rap.ten_rap,
+                        room = showtime.Phong_Chieu.ten_phong,
+                        price = ticket.gia_ve,
+                        verified_at = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex);
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// GET: api/staff/verified-tickets?date={date}
+        /// Lấy danh sách vé đã soát trong ngày
+        /// ✅ Yêu cầu xác thực (Staff)
+        /// </summary>
+        [HttpGet]
+        [Route("verified-tickets")]
+        public IHttpActionResult GetVerifiedTickets(string date = "")
+        {
+            try
+            {
+                DateTime filterDate = DateTime.Today;
+                if (!string.IsNullOrEmpty(date) && DateTime.TryParse(date, out DateTime parsedDate))
+                    filterDate = parsedDate.Date;
+
+                var staffId = int.Parse(User.Identity.Name ?? "0");
+                var staff = db.Nhan_Viens.FirstOrDefault(nv => nv.nhanvien_id == staffId);
+
+                var query = db.Ves
+                    .Where(v => v.trang_thai_ve == "Đã sử dụng" && 
+                                v.Dat_Ve != null &&
+                                v.Suat_Chieu.ngay_chieu == filterDate)
+                    .AsQueryable();
+
+                // ✅ Nếu Staff có gán rạp → chỉ lấy vé của rạp đó
+                if (staff != null && staff.rap_id.HasValue)
+                {
+                    query = query.Where(v => v.Suat_Chieu.Phong_Chieu.rap_id == staff.rap_id.Value);
+                }
+
+                var verifiedTickets = query
+                    .OrderByDescending(v => v.ve_id)
+                    .Select(v => new
+                    {
+                        ticket_id = v.ve_id,
+                        movie_title = v.Suat_Chieu.Phim.ten_phim,
+                        customer_name = v.Dat_Ve.Khach_Hang.ho_ten,
+                        seat_number = v.Ghe != null ? v.Ghe.so_ghe : "N/A",
+                        date = v.Suat_Chieu.ngay_chieu.ToString("yyyy-MM-dd"),
+                        time = v.Suat_Chieu.Ca_Chieu.gio_bat_dau.ToString(@"hh\:mm"),
+                        cinema = v.Suat_Chieu.Phong_Chieu.Rap.ten_rap,
+                        price = v.gia_ve,
+                        qr_code = v.ma_qr_code
+                    })
+                    .ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Lấy danh sách vé đã soát thành công",
+                    data = new
+                    {
+                        date = filterDate.ToString("yyyy-MM-dd"),
+                        total_verified = verifiedTickets.Count,
+                        total_revenue = verifiedTickets.Sum(t => t.price),
+                        tickets = verifiedTickets
+                    }
                 });
             }
             catch (Exception ex)
