@@ -435,48 +435,42 @@ namespace WebCinema.Controllers.API
                     return BadRequest("Mã QR không được rỗng");
                 }
 
-                // ✅ Parse Staff ID with better error handling
-                int staffId = 0;
-                if (!int.TryParse(User.Identity.Name, out staffId) || staffId <= 0)
-                {
-                    LoggingHelper.LogError($"❌ Invalid staff authentication: {User.Identity.Name}");
-                    return Unauthorized();
-                }
-
                 var ticket = db.Ves.FirstOrDefault(v => v.ma_qr_code == qrCode.Trim());
                 if (ticket == null)
                 {
                     return Ok(new { success = false, message = "Mã QR không hợp lệ" });
                 }
 
-                // ✅ Check if showtime exists and is loaded
-                if (ticket.Suat_Chieu == null)
-                {
-                    LoggingHelper.LogError($"❌ Showtime not found for ticket: {qrCode}");
-                    return Ok(new { success = false, message = "Không tìm thấy suất chiếu cho vé này" });
-                }
-
                 var showtime = ticket.Suat_Chieu;
 
-                // ✅ Check if phong chieu and rap are loaded
-                if (showtime.Phong_Chieu == null || showtime.Phong_Chieu.Rap == null)
-                {
-                    LoggingHelper.LogError($"❌ Cinema data not found for showtime: {showtime.Suat_Chieu_id}");
-                    return Ok(new { success = false, message = "Dữ liệu rạp không tìm thấy" });
-                }
-
                 // ✅ KIỂM TRA QUYỀN: Staff chỉ soát vé của rạp mình
-                var staff = db.Nhan_Viens.FirstOrDefault(nv => nv.nhanvien_id == staffId);
-                if (staff != null && staff.rap_id.HasValue)
+                int staffId = 0;
+                // User.Identity.Name có thể là email hoặc ID tùy vào cách tạo ticket
+                if (!int.TryParse(User.Identity.Name, out staffId))
                 {
-                    // Staff có gán rạp → chỉ soát vé của rạp đó
-                    if (showtime.Phong_Chieu.rap_id != staff.rap_id.Value)
+                    // Nếu không parse được ID, thử tìm theo email
+                    var email = User.Identity.Name;
+                    var staffByEmail = db.Nhan_Viens.FirstOrDefault(nv => nv.email == email);
+                    if (staffByEmail != null)
                     {
-                        LoggingHelper.LogInfo($"❌ Staff {staffId} cố soát vé của rạp khác: {qrCode}");
-                        return Ok(new { success = false, message = "❌ Bạn không có quyền soát vé này. Vé này thuộc rạp khác." });
+                        staffId = staffByEmail.nhanvien_id;
                     }
                 }
-                // Nếu staff không có gán rạp (là Admin) → cho soát tất cả
+
+                if (staffId > 0)
+                {
+                    var staff = db.Nhan_Viens.FirstOrDefault(nv => nv.nhanvien_id == staffId);
+                    if (staff != null && staff.rap_id.HasValue)
+                    {
+                        // Staff có gán rạp → chỉ soát vé của rạp đó
+                        if (showtime.Phong_Chieu.rap_id != staff.rap_id.Value)
+                        {
+                            LoggingHelper.LogInfo($"❌ Staff {staffId} cố soát vé của rạp khác: {qrCode}");
+                            return Ok(new { success = false, message = "❌ Bạn không có quyền soát vé này. Vé này thuộc rạp khác." });
+                        }
+                    }
+                    // Nếu staff không có gán rạp (là Admin) → cho soát tất cả
+                }
 
                 if (ticket.trang_thai_ve == "Đã sử dụng")
                 {
@@ -497,18 +491,18 @@ namespace WebCinema.Controllers.API
                     message = "✅ Vé hợp lệ",
                     data = new
                     {
-                        movie_title = showtime?.Phim?.ten_phim ?? "N/A",
-                        customer_name = booking?.Khach_Hang?.ho_ten ?? "N/A",
+                        movie_title = showtime?.Phim.ten_phim ?? "N/A",
+                        customer_name = booking?.Khach_Hang.ho_ten ?? "N/A",
                         seat_number = ticket.Ghe?.so_ghe ?? "N/A",
                         date = showtime?.ngay_chieu.ToString("yyyy-MM-dd") ?? "N/A",
-                        time = showtime?.Ca_Chieu?.gio_bat_dau.ToString(@"hh\:mm") ?? "N/A",
-                        cinema = showtime?.Phong_Chieu?.Rap?.ten_rap ?? "N/A"
+                        time = showtime?.Ca_Chieu.gio_bat_dau.ToString(@"hh\:mm") ?? "N/A",
+                        cinema = showtime?.Phong_Chieu.Rap.ten_rap ?? "N/A"
                     }
                 });
             }
             catch (Exception ex)
             {
-                LoggingHelper.LogError($"❌ VerifyTicket Error: {ex.Message}\n{ex.StackTrace}");
+                LoggingHelper.LogError(ex);
                 return InternalServerError(ex);
             }
         }
@@ -1036,6 +1030,253 @@ namespace WebCinema.Controllers.API
             catch (Exception ex)
             {
                 LoggingHelper.LogError(ex);
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// POST: api/staff/verify-ticket-info
+        /// Xác thực thông tin vé (chỉ định danh bằng QR code)
+        /// ✅ Yêu cầu xác thực (Staff)
+        /// </summary>
+        [HttpPost]
+        [Route("verify-ticket-info")]
+        public IHttpActionResult VerifyTicketInfo([FromBody] JObject data)
+        {
+            try
+            {
+                string ticketCode = data?["ticket_code"]?.Value<string>();
+                if (string.IsNullOrWhiteSpace(ticketCode))
+                {
+                    return BadRequest("Mã vé không được để trống");
+                }
+
+                var ticket = db.Ves.FirstOrDefault(v => v.ma_qr_code == ticketCode);
+
+                if (ticket == null)
+                {
+                    return Ok(new { success = false, message = "Mã vé không hợp lệ" });
+                }
+
+                var showtime = ticket.Suat_Chieu;
+                var movie = showtime.Phim;
+                var booking = ticket.Dat_Ve;
+                var customer = booking.Khach_Hang;
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
+                    {
+                        ticket_id = ticket.ve_id,
+                        movie_title = movie.ten_phim,
+                        show_date = showtime.ngay_chieu.ToString("yyyy-MM-dd"),
+                        show_time = showtime.Ca_Chieu.gio_bat_dau.ToString(@"hh\:mm"),
+                        cinema_name = showtime.Phong_Chieu.Rap.ten_rap,
+                        room_name = showtime.Phong_Chieu.ten_phong,
+                        seat_number = ticket.Ghe.so_ghe,
+                        customer_name = customer.ho_ten,
+                        ticket_status = ticket.trang_thai_ve,
+                        booking_status = booking.trang_thai_Dat_Ve
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex, "VerifyTicketInfo");
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// POST: api/staff/confirm-ticket-usage
+        /// Xác nhận sử dụng vé (Đánh dấu vé là đã sử dụng)
+        /// ✅ Yêu cầu xác thực (Staff)
+        /// </summary>
+        [HttpPost]
+        [Route("confirm-ticket-usage")]
+        public IHttpActionResult ConfirmTicketUsage([FromBody] JObject data)
+        {
+            try
+            {
+                string ticketCode = data?["ticket_code"]?.Value<string>();
+                if (string.IsNullOrWhiteSpace(ticketCode))
+                {
+                    return BadRequest("Mã vé không được để trống");
+                }
+
+                var ticket = db.Ves.FirstOrDefault(v => v.ma_qr_code == ticketCode);
+
+                if (ticket == null)
+                {
+                    return Ok(new { success = false, message = "Mã vé không hợp lệ" });
+                }
+
+                if (ticket.trang_thai_ve == "Đã sử dụng")
+                {
+                    return Ok(new { success = false, message = "Vé này đã được sử dụng" });
+                }
+
+                if (ticket.Dat_Ve.trang_thai_Dat_Ve != "Đã Thanh toán")
+                {
+                    return Ok(new { success = false, message = "Vé chưa được thanh toán" });
+                }
+
+                ticket.trang_thai_ve = "Đã sử dụng";
+                db.SubmitChanges();
+
+                LoggingHelper.LogInfo($"✅ Soát vé thành công: {ticketCode}");
+
+                return Ok(new { success = true, message = "Xác nhận sử dụng vé thành công" });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex, "ConfirmTicketUsage");
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// GET: api/staff/bookings
+        /// Lấy danh sách đơn đặt vé (cho Staff)
+        /// </summary>
+        [HttpGet]
+        [Route("bookings")]
+        public IHttpActionResult GetBookings(int page = 1, int pageSize = 20, string status = null)
+        {
+            try
+            {
+                var query = db.Dat_Ves.AsQueryable();
+
+                if (!string.IsNullOrEmpty(status))
+                {
+                    query = query.Where(b => b.trang_thai_Dat_Ve == status);
+                }
+
+                int total = query.Count();
+                var bookings = query
+                    .OrderByDescending(b => b.ngay_tao)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .Select(b => new
+                    {
+                        booking_id = b.Dat_Ve_id,
+                        customer_name = b.Khach_Hang != null ? b.Khach_Hang.ho_ten : "Khách vãng lai",
+                        created_at = b.ngay_tao.HasValue ? b.ngay_tao.Value.ToString("yyyy-MM-dd HH:mm") : "N/A",
+                        status = b.trang_thai_Dat_Ve,
+                        total_amount = b.tong_tien,
+                        tickets_count = b.Ves.Count
+                    })
+                    .ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    data = new
+                    {
+                        bookings = bookings,
+                        total = total,
+                        page = page,
+                        page_size = pageSize
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex, "GetBookings");
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// GET: api/staff/booking/{bookingId}
+        /// Lấy chi tiết đơn đặt vé (cho Staff)
+        /// </summary>
+        [HttpGet]
+        [Route("booking/{bookingId}")]
+        public IHttpActionResult GetBookingDetail(int bookingId)
+        {
+            try
+            {
+                var booking = db.Dat_Ves.FirstOrDefault(b => b.Dat_Ve_id == bookingId);
+                if (booking == null) return NotFound();
+
+                var tickets = booking.Ves.Select(v => new
+                {
+                    ticket_id = v.ve_id,
+                    seat = v.Ghe != null ? v.Ghe.so_ghe : "N/A",
+                    price = v.gia_ve,
+                    status = v.trang_thai_ve,
+                    qr_code = v.ma_qr_code
+                }).ToList();
+
+                var foods = booking.DonHang_DoAns.Select(f => new
+                {
+                    food_name = f.Do_An != null ? f.Do_An.ten_san_pham : "N/A",
+                    quantity = f.so_luong,
+                    price = f.Do_An != null ? f.Do_An.gia : 0
+                }).ToList();
+
+                var result = new
+                {
+                    booking_id = booking.Dat_Ve_id,
+                    customer_name = booking.Khach_Hang != null ? booking.Khach_Hang.ho_ten : "Khách vãng lai",
+                    created_at = booking.ngay_tao.HasValue ? booking.ngay_tao.Value.ToString("yyyy-MM-dd HH:mm") : "N/A",
+                    status = booking.trang_thai_Dat_Ve,
+                    total_amount = booking.tong_tien,
+                    tickets = tickets,
+                    foods = foods
+                };
+
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex, "GetBookingDetail");
+                return InternalServerError(ex);
+            }
+        }
+
+        /// <summary>
+        /// POST: api/staff/booking/cancel
+        /// Hủy đơn đặt vé (giống StaffBookingManagementController)
+        /// </summary>
+        [HttpPost]
+        [Route("booking/cancel")]
+        public IHttpActionResult CancelBooking([FromBody] JObject data)
+        {
+            try
+            {
+                int bookingId = data["booking_id"]?.Value<int>() ?? 0;
+                if (bookingId <= 0) return BadRequest("Booking ID không hợp lệ");
+
+                var booking = db.Dat_Ves.FirstOrDefault(b => b.Dat_Ve_id == bookingId);
+                if (booking == null) return NotFound();
+
+                // Logic hủy giống MVC Controller
+                booking.trang_thai_Dat_Ve = "Đã Hủy";
+
+                // 1. Giải phóng vé
+                var tickets = db.Ves.Where(v => v.Dat_Ve_id == bookingId).ToList();
+                foreach (var t in tickets)
+                {
+                    t.Dat_Ve_id = null;
+                    t.trang_thai_ve = "Chưa sử dụng";
+                    t.ma_qr_code = null;
+                }
+
+                // 2. Xóa đồ ăn
+                var foodOrders = db.DonHang_DoAns.Where(f => f.Dat_Ve_id == bookingId).ToList();
+                db.DonHang_DoAns.DeleteAllOnSubmit(foodOrders);
+
+                db.SubmitChanges();
+
+                LoggingHelper.LogInfo($"✅ Staff hủy booking {bookingId}");
+                return Ok(new { success = true, message = "Hủy đơn đặt thành công" });
+            }
+            catch (Exception ex)
+            {
+                LoggingHelper.LogError(ex, "CancelBooking");
                 return InternalServerError(ex);
             }
         }
