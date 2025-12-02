@@ -308,7 +308,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                           Text('Đạo diễn', style: AppTheme.headingSmall),
                           const SizedBox(height: 8),
                           Text(
-                            _movieDetail!.director!['name'] ?? 'N/A',
+                            _movieDetail!.director!['name'] ?? '',
                             style: AppTheme.bodyMedium,
                           ),
                           const SizedBox(height: 16),
@@ -451,14 +451,11 @@ class _ShowtimeSelectionCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          showtime['cinema'] ?? 'N/A',
+                          showtime['cinema'] ?? '',
                           style: AppTheme.headingSmall,
                         ),
                         const SizedBox(height: 4),
-                        Text(
-                          showtime['room'] ?? 'N/A',
-                          style: AppTheme.bodySmall,
-                        ),
+                        Text(showtime['room'] ?? '', style: AppTheme.bodySmall),
                       ],
                     ),
                   ),
@@ -493,10 +490,7 @@ class _ShowtimeSelectionCard extends StatelessWidget {
                         color: AppTheme.mediumGray,
                       ),
                       const SizedBox(width: 4),
-                      Text(
-                        showtime['date'] ?? 'N/A',
-                        style: AppTheme.bodySmall,
-                      ),
+                      Text(showtime['date'] ?? '', style: AppTheme.bodySmall),
                       const SizedBox(width: 16),
                       const Icon(
                         Icons.access_time,
@@ -505,7 +499,7 @@ class _ShowtimeSelectionCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        showtime['start_time'] ?? 'N/A',
+                        showtime['start_time'] ?? '',
                         style: AppTheme.bodySmall,
                       ),
                     ],

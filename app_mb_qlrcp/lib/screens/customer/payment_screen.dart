@@ -351,43 +351,35 @@ class _PaymentScreenState extends State<PaymentScreen> {
                                         _promoMessage = null;
                                       });
                                     },
-                              items: _availablePromos
-                                  .where(
-                                    (promo) => promo['isApplicable'] == true,
-                                  )
-                                  .map((promo) {
-                                    // API now returns all promos with isApplicable flag
-                                    final isApplicable =
-                                        promo['isApplicable'] == true;
-                                    final reason = promo['reason'] ?? '';
-                                    final moTa = promo['mo_ta'] ?? '';
-                                    final maKhuyen =
-                                        promo['ma_khuyen_mai'] ?? '';
+                              items: _availablePromos.map((promo) {
+                                // Hiển thị TẤT CẢ các mã khuyến mãi mà API trả về
+                                final isApplicable =
+                                    promo['isApplicable'] == true;
+                                final reason = promo['reason'] ?? '';
+                                final moTa = promo['mo_ta'] ?? '';
+                                final maKhuyen = promo['ma_khuyen_mai'] ?? '';
 
-                                    String displayText = '$maKhuyen - $moTa';
-                                    if (!isApplicable && reason.isNotEmpty) {
-                                      displayText += ' ($reason)';
-                                    }
+                                String displayText = '$maKhuyen - $moTa';
+                                if (!isApplicable && reason.isNotEmpty) {
+                                  displayText += ' ($reason)';
+                                }
 
-                                    return DropdownMenuItem<
-                                      Map<String, dynamic>
-                                    >(
-                                      value: promo,
-                                      enabled: isApplicable,
-                                      child: Text(
-                                        displayText,
-                                        style: TextStyle(
-                                          color: isApplicable
-                                              ? Colors.black
-                                              : Colors.grey,
-                                          decoration: isApplicable
-                                              ? null
-                                              : TextDecoration.lineThrough,
-                                        ),
-                                      ),
-                                    );
-                                  })
-                                  .toList(),
+                                return DropdownMenuItem<Map<String, dynamic>>(
+                                  value: promo,
+                                  enabled: isApplicable,
+                                  child: Text(
+                                    displayText,
+                                    style: TextStyle(
+                                      color: isApplicable
+                                          ? Colors.black
+                                          : Colors.grey,
+                                      decoration: isApplicable
+                                          ? null
+                                          : TextDecoration.lineThrough,
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
                             ),
                           ),
                           const SizedBox(height: 8),

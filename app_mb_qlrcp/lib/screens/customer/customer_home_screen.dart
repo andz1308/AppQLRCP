@@ -392,7 +392,7 @@ class _ProfileScreenState extends State<_ProfileScreen> {
   }
 
   String _formatDate(String? dateString) {
-    if (dateString == null || dateString.isEmpty) return 'N/A';
+    if (dateString == null || dateString.isEmpty) return '';
     try {
       final date = DateTime.parse(dateString);
       return '${date.day}/${date.month}/${date.year}';
@@ -479,7 +479,7 @@ class _ProfileScreenState extends State<_ProfileScreen> {
                       color: AppTheme.primaryOrange,
                     ),
                     title: const Text('Email'),
-                    subtitle: Text(_profileData?['email'] ?? 'N/A'),
+                    subtitle: Text(_profileData?['email'] ?? ''),
                   ),
                 ),
                 if (_profileData?['phone'] != null)

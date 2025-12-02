@@ -418,8 +418,6 @@ class _BookingSeatScreenState extends State<BookingSeatScreen> {
                         ),
                         SizedBox(width: 16),
                         _LegendItem(color: Color(0xFFC0392B), label: 'VIP'),
-                        SizedBox(width: 16),
-                        _LegendItem(color: Color(0xFFD6296D), label: 'Đôi'),
                       ],
                     ),
                   ),
