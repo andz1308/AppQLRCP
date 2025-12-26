@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../../models/user.dart';
 import '../../services/staff_service.dart';
 import '../../services/auth_service.dart';
 import '../../utils/app_theme.dart';
 import '../login_screen.dart';
-import 'staff_verify_ticket_screen.dart';
+import 'staff_showtime_selection_screen.dart';
 
 class StaffHomeScreen extends StatefulWidget {
   final User user;
@@ -25,7 +26,7 @@ class _StaffHomeScreenState extends State<StaffHomeScreen> {
     super.initState();
     _screens = [
       _DashboardScreen(staffId: widget.user.userId),
-      StaffVerifyTicketScreen(),
+      const StaffShowtimeSelectionScreen(),
       _ProfileScreen(user: widget.user),
     ];
   }
@@ -95,6 +96,12 @@ class _DashboardScreenState extends State<_DashboardScreen> {
     }
   }
 
+  String _formatCurrency(dynamic value) {
+    if (value == null) return '0đ';
+    final formatter = NumberFormat('#,###', 'vi_VN');
+    return '${formatter.format(value)}đ';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -129,13 +136,17 @@ class _DashboardScreenState extends State<_DashboardScreen> {
                       children: [
                         _StatCard(
                           title: 'Tổng vé bán',
-                          value: _dashboardData!['total_tickets'].toString(),
-                          icon: Icons.confirmation_number,
-                          color: AppTheme.primaryOrange,
+                          value: _formatCurrency(
+                            _dashboardData!['total_revenue'],
+                          ),
+                          icon: Icons.attach_money,
+                          color: AppTheme.success,
                         ),
                         _StatCard(
-                          title: 'Tổng doanh thu',
-                          value: '${_dashboardData!['total_revenue']}đ',
+                          title: 'Doanh thu tháng',
+                          value: _formatCurrency(
+                            _dashboardData!['monthly_revenue'],
+                          ),
                           icon: Icons.attach_money,
                           color: AppTheme.success,
                         ),

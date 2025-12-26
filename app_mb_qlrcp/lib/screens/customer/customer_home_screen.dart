@@ -401,16 +401,6 @@ class _ProfileScreenState extends State<_ProfileScreen> {
     }
   }
 
-  String _formatCurrency(dynamic amount) {
-    if (amount == null) return '0 VNĐ';
-    try {
-      final num value = amount is String ? num.parse(amount) : amount;
-      return '${value.toStringAsFixed(0)} VNĐ';
-    } catch (e) {
-      return '$amount VNĐ';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -547,30 +537,7 @@ class _ProfileScreenState extends State<_ProfileScreen> {
                       ),
                     ),
                   ),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(
-                      Icons.confirmation_number,
-                      color: AppTheme.primaryOrange,
-                    ),
-                    title: const Text('Tổng vé đã mua'),
-                    subtitle: Text(
-                      (_profileData?['total_bookings'] ?? 0).toString(),
-                    ),
-                  ),
-                ),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(
-                      Icons.attach_money,
-                      color: AppTheme.primaryOrange,
-                    ),
-                    title: const Text('Tổng chi tiêu'),
-                    subtitle: Text(
-                      _formatCurrency(_profileData?['total_spent'] ?? 0),
-                    ),
-                  ),
-                ),
+
                 Card(
                   child: ListTile(
                     leading: const Icon(

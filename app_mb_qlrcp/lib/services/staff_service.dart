@@ -29,7 +29,19 @@ class StaffService {
         final data = response.data as Map<String, dynamic>;
         return {'success': data['success'], 'data': data['data']};
       }
-      return {'success': false, 'message': 'Lỗi tải suất chiếu'};
+      return {
+        'success': false,
+        'message': 'Lỗi tải suất chiếu: ${response.statusCode}',
+      };
+    } on DioException catch (e) {
+      if (e.response != null) {
+        final message =
+            e.response?.data?['message'] ??
+            e.response?.statusMessage ??
+            'Lỗi không xác định';
+        return {'success': false, 'message': 'Server error: $message'};
+      }
+      return {'success': false, 'message': 'Lỗi kết nối: ${e.message}'};
     } catch (e) {
       return {'success': false, 'message': 'Lỗi: ${e.toString()}'};
     }
@@ -42,11 +54,15 @@ class StaffService {
       if (response.statusCode == 200) {
         final data = response.data as Map<String, dynamic>;
         if (data['success'] == true && data['data'] != null) {
+          final seatsData = data['data'] as Map<String, dynamic>;
           return {
             'success': true,
-            'seats': (data['data'] as List)
+            'seats': (seatsData['seats'] as List)
                 .map((item) => Seat.fromJson(item))
                 .toList(),
+            'showtime_id': seatsData['showtime_id'],
+            'rows': seatsData['rows'],
+            'columns': seatsData['columns'],
           };
         }
       }
@@ -61,8 +77,7 @@ class StaffService {
     required List<int> seatIds,
     required String customerPhone,
     required String customerName,
-    List<Map<String, dynamic>>? foods,
-    String? notes,
+    String paymentMethod = 'cash',
   }) async {
     try {
       final dio = getHttpClient();
@@ -71,11 +86,10 @@ class StaffService {
         options: Options(headers: jsonHeaders()),
         data: {
           'showtime_id': showtimeId,
-          'seats': seatIds,
+          'seat_ids': seatIds,
           'customer_phone': customerPhone,
           'customer_name': customerName,
-          'foods': foods ?? [],
-          'notes': notes ?? '',
+          'payment_method': paymentMethod,
         },
       );
       if (response.statusCode == 200 || response.statusCode == 201) {
@@ -140,13 +154,21 @@ class StaffService {
     }
   }
 
-  Future<Map<String, dynamic>> verifyTicket(String qrCode) async {
+  Future<Map<String, dynamic>> verifyTicket(
+    String qrCode, {
+    int? showtimeId,
+  }) async {
     try {
       final dio = getHttpClient();
+      final requestData = {
+        'qr_code': qrCode,
+        if (showtimeId != null) 'showtime_id': showtimeId,
+      };
+
       final response = await dio.post(
         '${ApiConstants.apiStaff}/verify-ticket',
         options: Options(headers: jsonHeaders()),
-        data: {'qr_code': qrCode},
+        data: requestData,
       );
       if (response.statusCode == 200) {
         final data = response.data as Map<String, dynamic>;
